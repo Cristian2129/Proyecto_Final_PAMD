@@ -10,10 +10,14 @@ ENV PATH="${SPARK_HOME}/bin:${PATH}"
 ENV JUPYTER_TOKEN="hola-mundo"
 
 # 2. Instalar dependencias del sistema: Java y herramientas
+# Se añadieron procps (para 'ps'), rsync (necesario para Spark) y dos2unix (para arreglar start.sh)
 RUN apt-get update && apt-get install -y \
     openjdk-21-jre-headless \
     curl \
     tini \
+    procps \
+    rsync \
+    dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. Descargar y configurar Spark
@@ -30,6 +34,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 5. Preparar el directorio de trabajo y el script de inicio
 WORKDIR /app
 COPY start.sh .
+# 🚨 SOLUCIÓN LÍNEAS CRLF: Convertir el script a formato Unix (LF) antes de hacerlo ejecutable.
+# Esto previene el error "$'\r': command not found".
+RUN dos2unix start.sh
 RUN chmod +x start.sh
 
 # 6. Exponer los puertos de las UIs
