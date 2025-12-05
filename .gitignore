@@ -1,2 +1,4 @@
 /clase 27.10.html
 *.parquet
+# Ignorar logs de Airflow
+logs/

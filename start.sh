@@ -13,7 +13,7 @@ echo "Iniciando MLflow Server..."
 mlflow server \
     --host 0.0.0.0 \
     --port 5000 \
-    --backend-store-uri postgresql://mlflow_user:mlflow_pass@postgres-db:5432/mlflow_db \
+    --backend-store-uri postgresql://admin_user:admin_pass@postgres-db:5432/mlflow_db \
     --default-artifact-root file:///app/mlflow_artifacts &
 
 # Iniciar JupyterLab como el proceso principal (en primer plano)

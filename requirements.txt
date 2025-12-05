@@ -7,3 +7,4 @@ apache-airflow-client
 pandas
 matplotlib
 seaborn
+sodapy

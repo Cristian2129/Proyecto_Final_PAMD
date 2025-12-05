@@ -19,9 +19,14 @@ services:
       - ml-net
     environment:
       - SPARK_MASTER=spark://localhost:7077
+      - POSTGRES_USER=admin_user
+      - POSTGRES_PASSWORD=admin_pass
+      - POSTGRES_DB=mlflow_db
     depends_on:
-      - postgres-db
-      - kafka
+      postgres-db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
 
   # Base de datos compartida (MLflow y Airflow)
   postgres-db:
@@ -30,16 +35,17 @@ services:
     environment:
       - POSTGRES_USER=admin_user
       - POSTGRES_PASSWORD=admin_pass
-      # Nota: En un entorno real, necesitarías un script de inicialización para crear
-      # múltiples bases de datos (mlflow_db, airflow_db).
-      # Para simplificar este taller, usaremos la base de datos por defecto 'postgres'
-      # o 'mlflow_db' si el contenedor lo permite, pero Airflow suele requerir su propia DB.
-      # Una estrategia simple es usar la misma DB o configurar un script en /docker-entrypoint-initdb.d/
-      - POSTGRES_DB=mlflow_db 
+      - POSTGRES_DB=postgres
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - ml-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # --- NUEVOS SERVICIOS: KAFKA (Ingesta de Datos) ---
   zookeeper:
@@ -69,61 +75,56 @@ services:
       - ml-net
 
   # --- NUEVOS SERVICIOS: AIRFLOW (Orquestación) ---
-  # Inicializador de Airflow (solo corre una vez para configurar la DB)
-  airflow-init:
-    image: apache/airflow:2.7.1
-    container_name: airflow_init
-    command: version
-    environment:
-      # Usamos la misma instancia de Postgres, idealmente en una DB separada 'airflow_db'
-      # Aquí reutilizamos las credenciales de admin_user
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin_user:admin_pass@postgres-db/mlflow_db
-      - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
-      - AIRFLOW__CORE__LOAD_EXAMPLES=true
-      # Crear usuario admin por defecto
-      - _AIRFLOW_DB_UPGRADE=true
-      - _AIRFLOW_WWW_USER_CREATE=true
-      - _AIRFLOW_WWW_USER_USERNAME=admin
-      - _AIRFLOW_WWW_USER_PASSWORD=admin
-    networks:
-      - ml-net
-    depends_on:
-      - postgres-db
-
   airflow-webserver:
     image: apache/airflow:2.7.1
     container_name: airflow_webserver
     restart: always
     depends_on:
-      - postgres-db
-      - airflow-init
+      postgres-db:
+        condition: service_healthy
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin_user:admin_pass@postgres-db/mlflow_db
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin_user:admin_pass@postgres-db/airflow_db
       - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
-      - AIRFLOW__CORE__LOAD_EXAMPLES=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
     ports:
-      - "8081:8080" # Puerto mapeado a 8081 para evitar conflicto con Spark UI (8080)
+      - "8081:8080"
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
     networks:
       - ml-net
-    command: webserver
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+               airflow webserver"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   airflow-scheduler:
     image: apache/airflow:2.7.1
     container_name: airflow_scheduler
     restart: always
     depends_on:
-      - postgres-db
-      - airflow-init
+      postgres-db:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_started
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin_user:admin_pass@postgres-db/mlflow_db
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin_user:admin_pass@postgres-db/airflow_db
       - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
-      - AIRFLOW__CORE__LOAD_EXAMPLES=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
     networks:
       - ml-net
     command: scheduler
