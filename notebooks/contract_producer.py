@@ -10,6 +10,7 @@ from kafka import KafkaProducer
 import time
 from sodapy import Socrata
 import sys
+import re
 
 DEPARTAMENTOS_DISPONIBLES = [
     "Bogotá D.C.",
@@ -45,6 +46,56 @@ DEPARTAMENTO_REGION = {
     "Chocó": "Pacífico",
     "Nariño": "Pacífico",
 }
+
+def parse_duration(value):
+        """Función auxiliar para parsear duración"""
+        if value is None:
+            return None
+        
+        if isinstance(value, (int, float)):
+            return int(value)
+
+        value = str(value).strip()
+
+        # Si viene vacío, texto, "No Definido", "No D", etc.
+        if value == "" or value.lower() in ["no d", "no definido", "nd", "sin definir"]:
+            return None
+
+        # Extraer cualquier número dentro del texto
+        match = re.search(r'\d+', value)
+        if match:
+            return int(match.group(0))
+
+        # Si no hay ningún número → return None
+        return None
+def parse_year(value, default=2024):
+    """Función auxiliar para parsear año"""
+    if value is None:
+        return default
+    
+    if isinstance(value, (int, float)):
+        return int(value)
+    
+    value = str(value).strip()
+    
+    # Si viene vacío o "No D"
+    if value == "" or value.lower() in ["no d", "no definido", "nd"]:
+        return default
+    
+    # Extraer año (4 dígitos)
+    match = re.search(r'\d{4}', value)
+    if match:
+        return int(match.group(0))
+    
+    # Cualquier número
+    match = re.search(r'\d+', value)
+    if match:
+        year = int(match.group(0))
+        # Validar que sea un año razonable
+        if 2000 <= year <= 2030:
+            return year
+    
+    return default
 
 
 class SECOPContractProducer:
@@ -195,32 +246,42 @@ class SECOPContractProducer:
             print(f"Error descargando datos: {str(e)}")
             raise
 
-    def prepare_contract_message(self, row):
-        contract = {
-            "id_contrato": str(row.get('referencia_del_contrato', row.get('uid', f"CT-{row.name}"))),
-            "objeto_contrato": str(row.get('descripcion_del_procedimiento', row.get('objeto_del_contrato', ''))),
-            "entidad": str(row.get('nombre_entidad', '')),
-            "departamento": self.departamento,
-            "municipio": str(row.get('municipio', '')),
-            "region": DEPARTAMENTO_REGION.get(self.departamento, 'Desconocida'),
-            "codigo_unspsc": str(row.get('codigo_principal_de_categoria', '')),
-            "descripcion_categoria": str(row.get('descripcion_del_codigo_principal', '')),
-            "valor_contrato": float(row.get('valor_del_contrato', 0)) if pd.notna(row.get('valor_del_contrato')) else 0.0,
-            "duracion_dias": int(float(row.get('plazo_de_ejec_del_contrato', 0))) if pd.notna(row.get('plazo_de_ejec_del_contrato')) else None,
-            "fecha_firma": str(row.get('fecha_de_firma', '')),
-            "tipo_contrato": str(row.get('tipo_de_contrato', '')),
-            "estado_contrato": str(row.get('estado_contrato', '')),
-            "modalidad": str(row.get('modalidad_de_contratacion', '')),
-            "anno": int(row.get('anno_cargue_secop', 2024)) if pd.notna(row.get('anno_cargue_secop')) else 2024,
-            "id_interno_sistema": f"SYS-{row.name}",
-            "campo_vacio": None,
-            "constante_1": "VALOR_FIJO",
-            "constante_2": 100,
-            "duplicate_id": str(row.get('referencia_del_contrato', '')),
-            "timestamp_carga": datetime.now().isoformat()
-        }
 
-        return contract
+    def prepare_contract_message(self, row):
+            """
+            Prepara el mensaje del contrato para enviar a Kafka
+            """
+            try:
+                contract = {
+                    "id_contrato": str(row.get('referencia_del_contrato', row.get('uid', f"CT-{row.name}"))),
+                    "objeto_contrato": str(row.get('descripcion_del_procedimiento', row.get('objeto_del_contrato', ''))),
+                    "entidad": str(row.get('nombre_entidad', '')),
+                    "departamento": self.departamento,
+                    "region": DEPARTAMENTO_REGION.get(self.departamento, 'Desconocida'),
+                    "codigo_unspsc": str(row.get('codigo_de_categoria_principal', '')),
+                    "descripcion_categoria": str(row.get('descripcion_del_proceso', '')),
+                    "valor_contrato": float(row.get('valor_del_contrato', 0)) if pd.notna(row.get('valor_del_contrato')) else 0.0,
+                    "duracion_dias": parse_duration(row.get('duraci_n_del_contrato')),  # SIN self
+                    "fecha_firma": str(row.get('fecha_de_inicio_del_contrato', '')),
+                    "tipo_contrato": str(row.get('tipo_de_contrato', '')),
+                    "estado_contrato": str(row.get('estado_contrato', '')),
+                    "modalidad": str(row.get('modalidad_de_contratacion', '')),
+                    "anno": parse_year(row.get('anno_bpin'), 2024),  # SIN self - CAMBIO AQUÍ
+                    "id_interno_sistema": f"SYS-{row.name}",
+                    "campo_vacio": None,
+                    "constante_1": "VALOR_FIJO",
+                    "constante_2": 100,
+                    "duplicate_id": str(row.get('referencia_del_contrato', '')),
+                    "timestamp_carga": datetime.now().isoformat()
+                }
+                
+                return contract
+                
+            except Exception as e:
+                print(f"Error preparando contrato en fila {row.name}: {str(e)}")
+                return None
+
+
 
     def send_contracts_for_date(self, target_date):
         if self.contracts_df is None:
