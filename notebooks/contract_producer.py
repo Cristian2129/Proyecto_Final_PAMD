@@ -98,20 +98,59 @@ def parse_year(value, default=2024):
     return default
 
 
+def parse_duration(value):
+    """Función auxiliar para parsear duración"""
+    if value is None:
+        return None
+    
+    if isinstance(value, (int, float)):
+        return int(value)
+
+    value = str(value).strip()
+
+    if value == "" or value.lower() in ["no d", "no definido", "nd", "sin definir"]:
+        return None
+
+    match = re.search(r'\d+', value)
+    if match:
+        return int(match.group(0))
+
+    return None
+
+
+def parse_year(value, default=2024):
+    """Función auxiliar para parsear año"""
+    if value is None:
+        return default
+    
+    if isinstance(value, (int, float)):
+        return int(value)
+    
+    value = str(value).strip()
+
+    if value == "" or value.lower() in ["no d", "no definido", "nd"]:
+        return default
+
+    match = re.search(r'\d{4}', value)
+    if match:
+        return int(match.group(0))
+
+    match = re.search(r'\d+', value)
+    if match:
+        year = int(match.group(0))
+        if 2000 <= year <= 2030:
+            return year
+
+    return default
+
+
 class SECOPContractProducer:
     def __init__(self, bootstrap_servers='kafka:29092', topic='contratos-publicos'):
-        """
-        Inicializa el productor de Kafka
-        
-        Args:
-            bootstrap_servers: Dirección del servidor Kafka (usar kafka:29092 para comunicación interna)
-            topic: Nombre del tópico donde se publicarán los mensajes
-        """
+        """Inicializa el productor de Kafka"""
         self.producer = KafkaProducer(
             bootstrap_servers=bootstrap_servers,
             value_serializer=lambda v: json.dumps(v, default=str).encode('utf-8'),
             max_request_size=10485760,
-            # Configuraciones adicionales para estabilidad
             api_version=(0, 10, 1),
             connections_max_idle_ms=540000,
             request_timeout_ms=30000,
@@ -125,57 +164,42 @@ class SECOPContractProducer:
         print("\n======================================================================")
         print("VERIFICANDO DISPONIBILIDAD DE DATOS")
         print("======================================================================")
-        print(f"Departamento: {departamento}")
-        print("======================================================================\n")
 
         try:
             client = Socrata("www.datos.gov.co", None)
-            dataset_id = "jbjy-vk9h"
-
-            print("Consultando volumen de contratos en SECOP II...")
-
-            where_clause = (
-                f"departamento='{departamento}' AND "
-                f"fecha_de_firma >= '2024-01-01T00:00:00' AND "
-                f"fecha_de_firma < '2025-01-01T00:00:00'"
+            results = client.get(
+                "jbjy-vk9h",
+                where=(
+                    f"departamento='{departamento}' AND "
+                    f"fecha_de_firma >= '2024-01-01T00:00:00' AND "
+                    f"fecha_de_firma < '2025-01-01T00:00:00'"
+                ),
+                select="COUNT(*) as total"
             )
 
-            results = client.get(dataset_id, where=where_clause, select="COUNT(*) as total")
-
             if results:
-                total = int(results[0]['total'])
-                print(f"\nContratos encontrados en 2024: {total:,}")
+                total = int(results[0]["total"])
+                print(f"Contratos encontrados: {total:,}")
                 return total
 
             return 0
 
         except Exception as e:
             print(f"No se pudo verificar el volumen: {str(e)}")
-            print("Continuando sin verificación...")
             return -1
 
     def download_secop_data(self, departamento, year=2024):
-        """
-        Descarga datos de SECOP II con reintentos y manejo de errores
-        """
         self.departamento = departamento
 
         print("\n======================================================================")
         print("DESCARGANDO DATOS DE SECOP II")
         print("======================================================================")
-        print(f"Departamento: {departamento}")
-        print(f"Región: {DEPARTAMENTO_REGION.get(departamento, 'Desconocida')}")
-        print(f"Año: {year}")
-        print("======================================================================\n")
 
         total_available = self.check_department_data(departamento)
 
         try:
             client = Socrata("www.datos.gov.co", None)
             dataset_id = "jbjy-vk9h"
-
-            print("\nDescargando datos completos de la API (sin límite)...")
-            print("Esto puede tardar varios minutos según el volumen\n")
 
             where_clause = (
                 f"departamento='{departamento}' AND "
@@ -184,59 +208,32 @@ class SECOPContractProducer:
             )
 
             offset = 0
-            batch_size = 10000  # Reducido para evitar timeouts
+            batch_size = 10000
             all_results = []
-            max_retries = 3
 
             while True:
-                print(f"Descargando lote: {offset:,} - {offset + batch_size:,}")
-                
-                retry_count = 0
-                batch_results = None
-                
-                # Implementar reintentos con backoff exponencial
-                while retry_count < max_retries:
-                    try:
-                        batch_results = client.get(
-                            dataset_id,
-                            where=where_clause,
-                            limit=batch_size,
-                            offset=offset,
-                            order="fecha_de_firma ASC"
-                        )
-                        break  # Si funciona, salir del loop de reintentos
-                        
-                    except Exception as e:
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            wait_time = 2 ** retry_count  # 2, 4, 8 segundos
-                            print(f"⚠️ Error en descarga (intento {retry_count}/{max_retries}): {str(e)}")
-                            print(f"Reintentando en {wait_time} segundos...")
-                            time.sleep(wait_time)
-                        else:
-                            print(f"❌ Error persistente después de {max_retries} intentos")
-                            raise
+                batch_results = client.get(
+                    dataset_id,
+                    where=where_clause,
+                    limit=batch_size,
+                    offset=offset,
+                    order="fecha_de_firma ASC"
+                )
 
                 if not batch_results:
-                    print("No hay más datos disponibles. Descarga finalizada.")
                     break
 
                 all_results.extend(batch_results)
                 offset += batch_size
-
-                print(f"Total acumulado: {len(all_results):,}")
-
-                time.sleep(2)  # Delay entre requests para evitar rate limiting
+                time.sleep(2)
 
             self.contracts_df = pd.DataFrame.from_records(all_results)
 
             if len(self.contracts_df) == 0:
-                print("No se encontraron contratos para los filtros especificados.")
+                print("No se encontraron contratos.")
                 return False
 
-            print(f"\nTotal descargado: {len(self.contracts_df):,} contratos\n")
-
-            self.contracts_df['fecha_de_firma'] = pd.to_datetime(
+            self.contracts_df["fecha_de_firma"] = pd.to_datetime(
                 self.contracts_df['fecha_de_firma']
             ).dt.date
 
@@ -244,8 +241,9 @@ class SECOPContractProducer:
 
         except Exception as e:
             print(f"Error descargando datos: {str(e)}")
-            raise
+            return False
 
+<<<<<<< HEAD
 
     def prepare_contract_message(self, row):
             """
@@ -282,24 +280,49 @@ class SECOPContractProducer:
                 return None
 
 
+=======
+    def prepare_contract_message(self, row):
+        try:
+            contract = {
+                "id_contrato": str(row.get('referencia_del_contrato', row.get('uid', f"CT-{row.name}"))),
+                "objeto_contrato": str(row.get('descripcion_del_procedimiento', row.get('objeto_del_contrato', ''))),
+                "entidad": str(row.get('nombre_entidad', '')),
+                "departamento": self.departamento,
+                "region": DEPARTAMENTO_REGION.get(self.departamento, 'Desconocida'),
+                "codigo_unspsc": str(row.get('codigo_de_categoria_principal', '')),
+                "descripcion_categoria": str(row.get('descripcion_del_proceso', '')),
+                "valor_contrato": float(row.get('valor_del_contrato', 0)) if pd.notna(row.get('valor_del_contrato')) else 0.0,
+                "duracion_dias": parse_duration(row.get('duraci_n_del_contrato')),
+                "fecha_firma": str(row.get('fecha_de_inicio_del_contrato', '')),
+                "tipo_contrato": str(row.get('tipo_de_contrato', '')),
+                "estado_contrato": str(row.get('estado_contrato', '')),
+                "modalidad": str(row.get('modalidad_de_contratacion', '')),
+                "anno": parse_year(row.get('anno_bpin'), 2024),
+                "id_interno_sistema": f"SYS-{row.name}",
+                "campo_vacio": None,
+                "constante_1": "VALOR_FIJO",
+                "constante_2": 100,
+                "duplicate_id": str(row.get('referencia_del_contrato', '')),
+                "timestamp_carga": datetime.now().isoformat()
+            }
+            return contract
+
+        except Exception as e:
+            print(f"Error preparando contrato en fila {row.name}: {str(e)}")
+            return None
+>>>>>>> 01ba0aa (Actualización de Dockerfile, notebooks y scripts de contrato)
 
     def send_contracts_for_date(self, target_date):
         if self.contracts_df is None:
-            raise ValueError("Primero debes descargar los datos con download_secop_data()")
+            raise ValueError("Primero debes descargar los datos")
 
         date_contracts = self.contracts_df[
             self.contracts_df['fecha_de_firma'] == target_date
         ]
 
         if len(date_contracts) == 0:
-            print(f"No hay contratos para la fecha: {target_date}")
+            print(f"No hay contratos para {target_date}")
             return 0
-
-        print("\n======================================================================")
-        print(f"Enviando contratos del {target_date}")
-        print("======================================================================")
-        print(f"Total a enviar: {len(date_contracts):,}")
-        print("======================================================================\n")
 
         sent_count = 0
         error_count = 0
@@ -310,87 +333,51 @@ class SECOPContractProducer:
                 self.producer.send(self.topic, value=contract)
                 sent_count += 1
 
-                if sent_count % 50 == 0:
-                    print(f"Enviados {sent_count:,}/{len(date_contracts):,} contratos...")
-
-                if sent_count % 100 == 0:
-                    time.sleep(0.1)
-
             except Exception as e:
                 error_count += 1
-                if error_count <= 5:
-                    print(f"Error enviando contrato {idx}: {str(e)}")
                 continue
 
         self.producer.flush()
-        print(f"\n✅ {sent_count:,} contratos enviados correctamente para {target_date}")
 
-        if error_count > 0:
-            print(f"⚠️ {error_count} contratos con errores\n")
+        print(f"[OK] {sent_count:,} contratos enviados para {target_date}")
+        if error_count:
+            print(f"[WARNING] {error_count} errores")
 
         return sent_count
 
     def simulate_incremental_load(self, start_date=None, end_date=None, max_days=None):
         if self.contracts_df is None:
-            raise ValueError("Primero debes descargar los datos con download_secop_data()")
+            raise ValueError("Primero debes descargar los datos")
 
-        all_dates = sorted(self.contracts_df['fecha_de_firma'].unique())
+        all_dates = sorted(self.contracts_df["fecha_de_firma"].unique())
 
         if start_date is None:
             start_date = all_dates[0]
         if end_date is None:
             end_date = all_dates[-1]
 
-        dates_with_data = [d for d in all_dates if start_date <= d <= end_date]
+        dates = [d for d in all_dates if start_date <= d <= end_date]
 
         if max_days:
-            dates_with_data = dates_with_data[:max_days]
-
-        print("\n======================================================================")
-        print("INICIANDO CARGA INCREMENTAL A KAFKA")
-        print("======================================================================")
-        print(f"Departamento: {self.departamento}")
-        print(f"Fecha inicial: {start_date}")
-        print(f"Fecha final: {dates_with_data[-1]}")
-        print(f"Total días a procesar: {len(dates_with_data)}")
-        print(f"Tópico Kafka: {self.topic}")
-        print("======================================================================\n")
+            dates = dates[:max_days]
 
         total_sent = 0
 
-        for i, date in enumerate(dates_with_data, 1):
-            print(f"\n📅 Día {i}/{len(dates_with_data)}")
-            sent = self.send_contracts_for_date(date)
-            total_sent += sent
+        for date in dates:
+            total_sent += self.send_contracts_for_date(date)
             time.sleep(0.5)
 
-        print("\n======================================================================")
-        print("✅ CARGA INCREMENTAL COMPLETADA")
-        print("======================================================================")
-        print(f"Total de contratos enviados: {total_sent:,}")
-        print(f"Días procesados: {len(dates_with_data)}")
-        print(f"Promedio por día: {total_sent / len(dates_with_data):.1f}")
-        print("======================================================================\n")
+        print(f"Total enviados: {total_sent:,}")
 
     def close(self):
         self.producer.close()
 
 
 def main():
-    # Configuración para comunicación interna de Docker
-    KAFKA_BOOTSTRAP_SERVERS = 'kafka:29092'  # Puerto interno de Kafka
+    KAFKA_BOOTSTRAP_SERVERS = 'kafka:29092'
     KAFKA_TOPIC = 'contratos-publicos'
     DEPARTAMENTO = "Cundinamarca"
     YEAR = 2024
-
-    print("\n======================================================================")
-    print("PRODUCTOR DE CONTRATOS SECOP II PARA KAFKA")
-    print("======================================================================\n")
-
-    print("Departamentos recomendados (alto volumen):")
-    for dept in DEPARTAMENTOS_DISPONIBLES[:5]:
-        print(f" - {dept}")
-    print()
 
     try:
         producer = SECOPContractProducer(
@@ -398,34 +385,27 @@ def main():
             topic=KAFKA_TOPIC
         )
 
-        print(f"Descargando datos para: {DEPARTAMENTO}")
         success = producer.download_secop_data(
             departamento=DEPARTAMENTO,
             year=YEAR
         )
 
         if not success:
-            print("No se pudieron descargar datos. Abortando.")
+            print("No se pudieron descargar datos.")
             return
 
-        print("\n======================================================================")
-        response = input("¿Deseas proceder con la carga incremental a Kafka? (s/n): ")
-        if response.lower() != 's':
-            print("Carga cancelada por el usuario")
+        resp = input("¿Deseas cargar incrementamente? (s/n): ")
+        if resp.lower() != "s":
+            print("Cancelado.")
             return
 
         producer.simulate_incremental_load()
         producer.close()
-        print("\n✅ Proceso finalizado correctamente\n")
 
-    except KeyboardInterrupt:
-        print("\n⚠️ Proceso interrumpido por el usuario")
-        sys.exit(0)
+        print("[OK] Proceso finalizado.")
 
     except Exception as e:
-        print(f"\n❌ Error fatal: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error fatal: {str(e)}")
         sys.exit(1)
 
 

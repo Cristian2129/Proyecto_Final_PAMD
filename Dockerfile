@@ -4,10 +4,11 @@ FROM python:3.11-slim
 # Variables de entorno para las versiones y rutas
 ENV SPARK_VERSION=3.5.1
 ENV HADOOP_VERSION=3
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
 ENV SPARK_HOME=/opt/spark
-ENV PATH="${SPARK_HOME}/bin:${PATH}"
+ENV PATH="${JAVA_HOME}/bin:${SPARK_HOME}/bin:${PATH}" 
 ENV JUPYTER_TOKEN="hola-mundo"
+
 
 # 2. Instalar dependencias del sistema: Java y herramientas
 # Se añadieron procps (para 'ps'), rsync (necesario para Spark) y dos2unix (para arreglar start.sh)
