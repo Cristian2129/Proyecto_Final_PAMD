@@ -14,6 +14,7 @@ services:
       - "7078:7078"  # Spark Worker Port
     volumes:
       - ./notebooks:/app/notebooks
+      - ./scripts:/app/scripts              # ← NUEVO (línea 18)
       - mlflow-artifacts:/app/mlflow_artifacts
     networks:
       - ml-net
@@ -94,6 +95,8 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./notebooks:/opt/airflow/notebooks  # ← NUEVO (línea 107)
+      - ./scripts:/opt/airflow/scripts      # ← NUEVO (línea 108)
     networks:
       - ml-net
     command: >
@@ -125,6 +128,8 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./notebooks:/opt/airflow/notebooks  # ← NUEVO (línea 145)
+      - ./scripts:/opt/airflow/scripts      # ← NUEVO (línea 146)
     networks:
       - ml-net
     command: scheduler
